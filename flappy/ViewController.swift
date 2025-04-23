@@ -1,17 +1,123 @@
-// Game configuration
-
 import UIKit
-    let initialGapHeight: CGFloat = 350
-    let minimumGapHeight: CGFloat = 70
-    let gapDecreaseRate: CGFloat = 5  // decrease gap per point scoredimport UIKit
 
-    var difficultyLabel: UILabel!
+// game configuration using struct
+struct GameConfig {
+    static let initialGapHeight: CGFloat = 350
+    static let minimumGapHeight: CGFloat = 70
+    static let gapDecreaseRate: CGFloat = 5  // decrease gap per point scored
+    static let gravity: CGFloat = 0.5
+    static let birdStartPosition = CGPoint(x: 100, y: 300)
+    static let birdSize = CGSize(width: 50, height: 50)
+    static let pipeWidth: CGFloat = 60
+    static let pipeSpawnInterval: TimeInterval = 2.5
+    static let pipeHorizontalSpeed: CGFloat = 2
+    static let flapVelocity: CGFloat = -8
+}
+
+// score entry struct for leaderboard
+struct ScoreEntry: Codable { // encodable and decodable -- for propery lists ==>> easily save the leaderboard scores to UserDefaults and Easily load them scores back from UserDefaults by decoding the data
+    let name: String
+    let score: Int
+}
+
+// bird state struct -->> encapsulating bird properties and behavior
+struct BirdState {
+    var position: CGPoint
+    var velocity: CGFloat
+    
+    mutating func applyGravity() {
+        velocity += GameConfig.gravity
+    }
+    
+    mutating func flap() {
+        velocity = GameConfig.flapVelocity
+    }
+    
+    mutating func updatePosition() {
+        position.y += velocity
+    }
+    
+    // reset bird to starting position
+    mutating func reset() {
+        position = GameConfig.birdStartPosition
+        velocity = 0
+    }
+}
+
+// pipe config struct
+struct PipeConfig {
+    let topPipeHeight: CGFloat
+    let bottomPipeY: CGFloat
+    let gapHeight: CGFloat
+    
+    // generate random pipe config
+    static func random(for viewHeight: CGFloat, currentScore: Int) -> PipeConfig {
+        // calc current gap height based on score
+        let gapDecrease = min(CGFloat(currentScore) * GameConfig.gapDecreaseRate, 
+                             GameConfig.initialGapHeight - GameConfig.minimumGapHeight)
+        let currentGapHeight = GameConfig.initialGapHeight - gapDecrease
+        
+        let minHeight: CGFloat = 100
+        let maxHeight = viewHeight - currentGapHeight - 150
+        let topHeight = CGFloat.random(in: minHeight...maxHeight)
+        let bottomY = topHeight + currentGapHeight
+        
+        return PipeConfig(
+            topPipeHeight: topHeight,
+            bottomPipeY: bottomY,
+            gapHeight: currentGapHeight
+        )
+    }
+    
+    // computed property to determine difficulty level
+    var difficultyLevel: String {
+        let percentDifficulty = (GameConfig.initialGapHeight - gapHeight) / (GameConfig.initialGapHeight - GameConfig.minimumGapHeight)
+        
+        switch percentDifficulty {
+        case ..<0.3: return "Easy"
+        case 0.3..<0.6: return "Medium"
+        case 0.6..<0.9: return "Hard"
+        default: return "Extreme"
+        }
+    }
+    
+    // сomputed property for difficulty color
+    var difficultyColor: UIColor {
+        let percentDifficulty = (GameConfig.initialGapHeight - gapHeight) / (GameConfig.initialGapHeight - GameConfig.minimumGapHeight)
+        
+        switch percentDifficulty {
+        case ..<0.3: return .green
+        case 0.3..<0.6: return .yellow
+        case 0.6..<0.9: return .orange
+        default: return .red
+        }
+    }
+}
+
+// UI сonfig struct
+struct UIConfig {
+    struct Colors {
+        static let buttonBackground = UIColor(red: 0, green: 0.5, blue: 0.8, alpha: 0.8)
+        static let buttonPressed = UIColor(red: 0, green: 0.4, blue: 0.7, alpha: 0.9)
+        static let scoreBackground = UIColor(red: 0, green: 0, blue: 0, alpha: 0.5)
+        static let leaderboardBackground = UIColor(white: 0, alpha: 0.8)
+        static let gameOverText = UIColor.red
+        static let countdownText = UIColor.white
+    }
+    
+    struct Fonts {
+        static let scoreFont = UIFont.boldSystemFont(ofSize: 32)
+        static let countdownFont = UIFont.boldSystemFont(ofSize: 100)
+        static let buttonFont = UIFont.boldSystemFont(ofSize: 30)
+        static let gameOverFont = UIFont.boldSystemFont(ofSize: 36)
+        static let difficultyFont = UIFont.boldSystemFont(ofSize: 18)
+    }
+}
 
 class ViewController: UIViewController, UITextFieldDelegate {
 
     var bird: UIImageView!
-    var birdVelocity: CGFloat = 0
-    let gravity: CGFloat = 0.5
+    var birdState: BirdState!
     
     var backgroundImageView: UIImageView!
     var scoreLabel: UILabel!
@@ -20,23 +126,25 @@ class ViewController: UIViewController, UITextFieldDelegate {
     var countdownTimer: Timer?
     var countdownValue: Int = 3
     
-    // Leaderboard components
+    // ----- leaderboard components -----
     var leaderboardView: UIView!
     var nameTextField: UITextField!
     var submitButton: UIButton!
     var leaderboardTableView: UITableView!
-    var leaderboardScores: [(name: String, score: Int)] = []
+    var leaderboardScores: [ScoreEntry] = []   // Now using ScoreEntry struct
 
     var displayLink: CADisplayLink?
     var pipeTimer: Timer?
     var pipes: [UIImageView] = []
     var pipesPassedByBird = Set<UIImageView>()
+    var currentPipeConfig: PipeConfig?
 
     var isGameRunning = false
 
     // UI
     var startButton: UIButton!
     var gameOverLabel: UILabel!
+    var difficultyLabel: UILabel!
 
     override func viewDidLoad() {
         super.viewDidLoad()
@@ -45,39 +153,35 @@ class ViewController: UIViewController, UITextFieldDelegate {
     }
 
     func setupUI() {
-        
         let safeAreaInsets = view.safeAreaInsets
         
-        // Background
+        // background
         backgroundImageView = UIImageView(frame: view.bounds)
         backgroundImageView.image = UIImage(named: "background")
         backgroundImageView.contentMode = .scaleToFill
         view.addSubview(backgroundImageView)
         
-        let playAreaFrame = CGRect(
-                x: safeAreaInsets.left,
-                y: safeAreaInsets.top,
-                width: view.bounds.width - safeAreaInsets.left - safeAreaInsets.right,
-                height: view.bounds.height - safeAreaInsets.top - safeAreaInsets.bottom
-            )
-        
-        // Bird (hidden initially)
+        // bird (hidden initially)
         bird = UIImageView(image: UIImage(named: "bird"))
-        bird.frame = CGRect(x: 100, y: 300, width: 50, height: 50)
+        bird.frame = CGRect(origin: .zero, size: GameConfig.birdSize)
+        bird.center = GameConfig.birdStartPosition
         bird.isHidden = true
         view.addSubview(bird)
         
-        // Set up UI container for HUD elements to ensure they're on top
+        // initailize bird state
+        birdState = BirdState(position: GameConfig.birdStartPosition, velocity: 0)
+        
+        // set up UI container for HUD elements to ensure they are on top
         let hudContainer = UIView(frame: view.bounds)
         hudContainer.backgroundColor = .clear
         view.addSubview(hudContainer)
         
-        // Countdown Label - add to HUD container
+        // countdown Label - add to HUD container
         countdownLabel = UILabel()
         countdownLabel.text = "3"
         countdownLabel.textAlignment = .center
-        countdownLabel.font = UIFont.boldSystemFont(ofSize: 100)
-        countdownLabel.textColor = .white
+        countdownLabel.font = UIConfig.Fonts.countdownFont
+        countdownLabel.textColor = UIConfig.Colors.countdownText
         countdownLabel.frame = CGRect(x: 0, y: view.frame.height/2 - 100, width: view.frame.width, height: 200)
         countdownLabel.isHidden = true
         countdownLabel.layer.shadowColor = UIColor.black.cgColor
@@ -86,11 +190,11 @@ class ViewController: UIViewController, UITextFieldDelegate {
         countdownLabel.layer.shadowRadius = 3
         hudContainer.addSubview(countdownLabel)
         
-        // Difficulty indicator
+        // diff indicator
         difficultyLabel = UILabel()
         difficultyLabel.text = "Gap: Easy"
         difficultyLabel.textAlignment = .center
-        difficultyLabel.font = UIFont.boldSystemFont(ofSize: 18)
+        difficultyLabel.font = UIConfig.Fonts.difficultyFont
         difficultyLabel.textColor = .white
         difficultyLabel.backgroundColor = UIColor(red: 0, green: 0, blue: 0, alpha: 0.5)
         difficultyLabel.layer.cornerRadius = 10
@@ -100,19 +204,19 @@ class ViewController: UIViewController, UITextFieldDelegate {
         difficultyLabel.layer.zPosition = 100
         hudContainer.addSubview(difficultyLabel)
 
-        // Start button with effects - add to HUD container
+        // start btn with effects - add to HUD container
         startButton = UIButton(type: .system)
         startButton.setTitle("Start Game", for: .normal)
-        startButton.backgroundColor = UIColor(red: 0, green: 0.5, blue: 0.8, alpha: 0.8)
+        startButton.backgroundColor = UIConfig.Colors.buttonBackground
         startButton.setTitleColor(.white, for: .normal)
-        startButton.titleLabel?.font = UIFont.boldSystemFont(ofSize: 30)
+        startButton.titleLabel?.font = UIConfig.Fonts.buttonFont
         startButton.layer.cornerRadius = 15
         startButton.frame = CGRect(x: view.frame.width/2 - 100, y: view.frame.height/2 - 30, width: 200, height: 60)
         
-        // Add button effects
+        // btn effects
         startButton.showsTouchWhenHighlighted = true
         
-        // Add custom hover and pressed states
+        // custom hover and pressed states
         startButton.addTarget(self, action: #selector(buttonTouchDown), for: .touchDown)
         startButton.addTarget(self, action: #selector(buttonTouchUp), for: [.touchUpInside, .touchUpOutside, .touchCancel])
         startButton.addTarget(self, action: #selector(startCountdown), for: .touchUpInside)
@@ -123,19 +227,19 @@ class ViewController: UIViewController, UITextFieldDelegate {
         gameOverLabel = UILabel()
         gameOverLabel.text = "Game Over!"
         gameOverLabel.textAlignment = .center
-        gameOverLabel.font = UIFont.boldSystemFont(ofSize: 36)
-        gameOverLabel.textColor = .red
+        gameOverLabel.font = UIConfig.Fonts.gameOverFont
+        gameOverLabel.textColor = UIConfig.Colors.gameOverText
         gameOverLabel.frame = CGRect(x: 0, y: view.frame.height/2 - 150, width: view.frame.width, height: 60)
         gameOverLabel.isHidden = true
         hudContainer.addSubview(gameOverLabel)
 
-        // Score Label - add to HUD container
+        // score label - add to HUD container
         scoreLabel = UILabel()
         scoreLabel.text = "Score: 0"
         scoreLabel.textAlignment = .center
-        scoreLabel.font = UIFont.boldSystemFont(ofSize: 32)
+        scoreLabel.font = UIConfig.Fonts.scoreFont
         scoreLabel.textColor = .white
-        scoreLabel.backgroundColor = UIColor(red: 0, green: 0, blue: 0, alpha: 0.5) // Semi-transparent background
+        scoreLabel.backgroundColor = UIConfig.Colors.scoreBackground
         scoreLabel.layer.cornerRadius = 15
         scoreLabel.layer.masksToBounds = true
         scoreLabel.frame = CGRect(x: view.frame.width/2 - 75, y: 75, width: 150, height: 50)
@@ -143,24 +247,24 @@ class ViewController: UIViewController, UITextFieldDelegate {
         scoreLabel.layer.zPosition = 200000 // Ensure it's on top
         hudContainer.addSubview(scoreLabel)
         
-        // Setup Leaderboard
+        // setup Leaderboard
         setupLeaderboardUI()
 
-        // Tap gesture
+        // tap gesture
         let tapGesture = UITapGestureRecognizer(target: self, action: #selector(flap))
         view.addGestureRecognizer(tapGesture)
     }
     
     func setupLeaderboardUI() {
-        // Leaderboard container
+        // leaderboard container
         leaderboardView = UIView(frame: CGRect(x: view.frame.width/2 - 150, y: view.frame.height/2 - 200, width: 300, height: 400))
-        leaderboardView.backgroundColor = UIColor(white: 0, alpha: 0.8)
+        leaderboardView.backgroundColor = UIConfig.Colors.leaderboardBackground
         leaderboardView.layer.cornerRadius = 20
         leaderboardView.isHidden = true
-        leaderboardView.layer.zPosition = 101 // Higher than score
+        leaderboardView.layer.zPosition = 101 // higher than score
         view.addSubview(leaderboardView)
         
-        // Title
+        // title
         let titleLabel = UILabel(frame: CGRect(x: 0, y: 20, width: 300, height: 30))
         titleLabel.text = "LEADERBOARD"
         titleLabel.textAlignment = .center
@@ -168,7 +272,7 @@ class ViewController: UIViewController, UITextFieldDelegate {
         titleLabel.textColor = .white
         leaderboardView.addSubview(titleLabel)
         
-        // Your score
+        // your score
         let yourScoreLabel = UILabel(frame: CGRect(x: 20, y: 60, width: 260, height: 30))
         yourScoreLabel.text = "Your Score:"
         yourScoreLabel.textAlignment = .left
@@ -176,7 +280,7 @@ class ViewController: UIViewController, UITextFieldDelegate {
         yourScoreLabel.textColor = .white
         leaderboardView.addSubview(yourScoreLabel)
         
-        // Name input field
+        // name input field
         nameTextField = UITextField(frame: CGRect(x: 20, y: 100, width: 260, height: 40))
         nameTextField.placeholder = "Enter your name"
         nameTextField.backgroundColor = .white
@@ -188,7 +292,7 @@ class ViewController: UIViewController, UITextFieldDelegate {
         nameTextField.returnKeyType = .done
         leaderboardView.addSubview(nameTextField)
         
-        // Submit button
+        // submit btn
         submitButton = UIButton(type: .system)
         submitButton.setTitle("Submit Score", for: .normal)
         submitButton.backgroundColor = UIColor(red: 0, green: 0.7, blue: 0.3, alpha: 1)
@@ -199,7 +303,7 @@ class ViewController: UIViewController, UITextFieldDelegate {
         submitButton.addTarget(self, action: #selector(submitScore), for: .touchUpInside)
         leaderboardView.addSubview(submitButton)
         
-        // Table view for scores
+        // table view for scores
         leaderboardTableView = UITableView(frame: CGRect(x: 20, y: 200, width: 260, height: 150))
         leaderboardTableView.backgroundColor = .clear
         leaderboardTableView.register(UITableViewCell.self, forCellReuseIdentifier: "scoreCell")
@@ -208,7 +312,7 @@ class ViewController: UIViewController, UITextFieldDelegate {
         leaderboardTableView.layer.cornerRadius = 10
         leaderboardView.addSubview(leaderboardTableView)
         
-        // Close button
+        // close button
         let closeButton = UIButton(type: .system)
         closeButton.setTitle("Close", for: .normal)
         closeButton.backgroundColor = UIColor(red: 0.8, green: 0, blue: 0, alpha: 0.8)
@@ -220,27 +324,27 @@ class ViewController: UIViewController, UITextFieldDelegate {
         leaderboardView.addSubview(closeButton)
     }
     
-    // MARK: - Game Control Methods
-    
+    // game ctrl methods    
     @objc func startCountdown() {
-        // Hide start button and show countdown
+        // hide start btn -->> show countdown
         startButton.isHidden = true
         countdownLabel.isHidden = false
         countdownValue = 3
         countdownLabel.text = "\(countdownValue)"
         
-        // Place bird in starting position but don't start movement yet
+        // place bird in starting position BUT do not start movement yet
         bird.isHidden = false
-        bird.center = CGPoint(x: 100, y: 300)
+        birdState = BirdState(position: GameConfig.birdStartPosition, velocity: 0)
+        bird.center = birdState.position
         
-        // Start countdown timer
+        // start countdown timer
         countdownTimer = Timer.scheduledTimer(timeInterval: 1.0, target: self, selector: #selector(updateCountdown), userInfo: nil, repeats: true)
     }
     
     @objc func updateCountdown() {
         countdownValue -= 1
         
-        // Animate countdown number
+        // animate countdown number
         UIView.animate(withDuration: 0.2, animations: {
             self.countdownLabel.transform = CGAffineTransform(scaleX: 1.5, y: 1.5)
         }) { _ in
@@ -249,10 +353,8 @@ class ViewController: UIViewController, UITextFieldDelegate {
             }
         }
         
-        if countdownValue > 0 {
-            countdownLabel.text = "\(countdownValue)"
-        } else {
-            // Countdown finished, start the game
+        if countdownValue > 0 { countdownLabel.text = "\(countdownValue)"} 
+        else { // countdown finished -->> START the GAME
             countdownTimer?.invalidate()
             countdownLabel.isHidden = true
             startGame()
@@ -260,9 +362,9 @@ class ViewController: UIViewController, UITextFieldDelegate {
     }
     
     @objc func startGame() {
-        // Reset state
+        // reset state
         isGameRunning = true
-        birdVelocity = 0
+        birdState.reset()
         score = 0
         updateScoreLabel()
         
@@ -273,47 +375,49 @@ class ViewController: UIViewController, UITextFieldDelegate {
         scoreLabel.isHidden = false
         difficultyLabel.isHidden = false
         difficultyLabel.text = "Gap: Easy"
+        difficultyLabel.textColor = .green
         gameOverLabel.isHidden = true
         
-        // Start game loop
+        // start game loop
         displayLink = CADisplayLink(target: self, selector: #selector(gameLoop))
         displayLink?.add(to: .current, forMode: .default)
 
-        pipeTimer = Timer.scheduledTimer(timeInterval: 2.5, target: self, selector: #selector(spawnPipes), userInfo: nil, repeats: true)
+        pipeTimer = Timer.scheduledTimer(timeInterval: GameConfig.pipeSpawnInterval, target: self, selector: #selector(spawnPipes), userInfo: nil, repeats: true)
     }
     
     @objc func gameLoop() {
-        birdVelocity += gravity
-        bird.center.y += birdVelocity
+        // upd bird pos using the struct methods
+        birdState.applyGravity()
+        birdState.updatePosition()
+        bird.center = birdState.position
 
-        // Check screen boundaries
+        // check screen boundaries
         if bird.frame.minY <= 0 || bird.frame.maxY >= view.frame.height {
             gameOver()
             return
         }
 
-        // Move pipes and check collisions
+        // move pipes n check collisions
         for (index, pipe) in pipes.enumerated() {
-            pipe.center.x -= 2
+            pipe.center.x -= GameConfig.pipeHorizontalSpeed
 
-            // Check collision
-            if bird.frame.intersects(pipe.frame) {
+            if bird.frame.intersects(pipe.frame){ // collision check
                 gameOver()
                 return
             }
             
-            // Add score when passing pipe (only for top pipes to avoid double counting)
+            // add score when passing pipe -- ONLY for half/top pipes to avoid double count
             if index % 2 == 0 && !pipesPassedByBird.contains(pipe) && pipe.center.x < bird.center.x {
                 pipesPassedByBird.insert(pipe)
                 score += 1
                 updateScoreLabel()
                 
-                // Update difficulty display
+                // upd difficulty display using the current pipe config
                 updateDifficultyDisplay()
             }
         }
 
-        // Remove off-screen pipes
+        // remove off screen pipes | to avoid game lagging
         pipes.removeAll(where: { pipe in
             if pipe.frame.maxX < 0 {
                 pipesPassedByBird.remove(pipe)
@@ -325,60 +429,42 @@ class ViewController: UIViewController, UITextFieldDelegate {
     }
     
     func updateDifficultyDisplay() {
-        // Update the difficulty label based on current gap size
-        let gapDecrease = min(CGFloat(score) * CGFloat(gapDecreaseRate), initialGapHeight - minimumGapHeight)
-        let currentGapHeight = initialGapHeight - gapDecrease
-        let percentDifficulty = (initialGapHeight - currentGapHeight) / (initialGapHeight - minimumGapHeight)
+        // generate a current pipe config based on score to get difficulty info
+        let pipeConfig = PipeConfig.random(for: view.frame.height, currentScore: score)
         
-        // Update difficulty text
-        switch percentDifficulty {
-        case ..<0.3:
-            difficultyLabel.text = "Gap: Easy"
-            difficultyLabel.textColor = .green
-        case 0.3..<0.6:
-            difficultyLabel.text = "Gap: Medium"
-            difficultyLabel.textColor = .yellow
-        case 0.6..<0.9:
-            difficultyLabel.text = "Gap: Hard"
-            difficultyLabel.textColor = .orange
-        default:
-            difficultyLabel.text = "Gap: Extreme"
-            difficultyLabel.textColor = .red
-        }
+        // upd the difficulty label based on the pipe config
+        difficultyLabel.text = "Gap: \(pipeConfig.difficultyLevel)"
+        difficultyLabel.textColor = pipeConfig.difficultyColor
         
-        // If gap has reached minimum, flash the score briefly to indicate maximum difficulty
-        if currentGapHeight <= minimumGapHeight {
+        // if gap has reached min => flash the score briefly to indicate maximum difficulty
+        if pipeConfig.gapHeight <= GameConfig.minimumGapHeight {
             UIView.animate(withDuration: 1, animations: {
                 self.scoreLabel.backgroundColor = UIColor(red: 1, green: 0.2, blue: 0.2, alpha: 0.7)
             }) { _ in
                 UIView.animate(withDuration: 1) {
-                    self.scoreLabel.backgroundColor = UIColor(red: 0, green: 0, blue: 0, alpha: 0.5)
+                    self.scoreLabel.backgroundColor = UIConfig.Colors.scoreBackground
                 }
             }
         }
     }
     
     @objc func spawnPipes() {
-        let pipeWidth: CGFloat = 60
+        // use PipeConfig struct to generate a random pipe configuration
+        let pipeConfig = PipeConfig.random(for: view.frame.height, currentScore: score)
+        currentPipeConfig = pipeConfig
         
-        // Calculate current gap height based on score
-        let gapDecrease = min(CGFloat(score) * CGFloat(gapDecreaseRate), initialGapHeight - minimumGapHeight)
-        let currentGapHeight = initialGapHeight - gapDecrease
-        
-        let minHeight: CGFloat = 100
-        let maxHeight = view.frame.height - currentGapHeight - 150
-        let topHeight = CGFloat.random(in: minHeight...maxHeight)
-
-        // Top pipe (flipped)
-        let topPipe = UIImageView(frame: CGRect(x: view.frame.width, y: 0, width: pipeWidth, height: topHeight))
+        // top pipe is FLIPPED bottom pipe uW
+        let topPipe = UIImageView(frame: CGRect(x: view.frame.width, y: 0, 
+                                              width: GameConfig.pipeWidth, height: pipeConfig.topPipeHeight))
         topPipe.image = UIImage(named: "pipe")
         topPipe.contentMode = UIView.ContentMode.scaleToFill
-        // Flip the image for top pipe
+        // FLIP ITTTTTTTTTTTTT
         topPipe.transform = CGAffineTransform(scaleX: 1, y: -1)
         
-        // Bottom pipe (normal orientation)
-        let bottomY = topHeight + currentGapHeight
-        let bottomPipe = UIImageView(frame: CGRect(x: view.frame.width, y: bottomY, width: pipeWidth, height: view.frame.height - bottomY))
+        // bottom pipe is straight
+        let bottomPipe = UIImageView(frame: CGRect(x: view.frame.width, y: pipeConfig.bottomPipeY, 
+                                                 width: GameConfig.pipeWidth, 
+                                                 height: view.frame.height - pipeConfig.bottomPipeY))
         bottomPipe.image = UIImage(named: "pipe")
         bottomPipe.contentMode = UIView.ContentMode.scaleToFill
 
@@ -390,18 +476,18 @@ class ViewController: UIViewController, UITextFieldDelegate {
     }
     
     @objc func buttonTouchDown(_ sender: UIButton) {
-        // Button pressed effect
+        // btn pressed effect
         UIView.animate(withDuration: 0.1) {
             sender.transform = CGAffineTransform(scaleX: 0.95, y: 0.95)
-            sender.backgroundColor = UIColor(red: 0, green: 0.4, blue: 0.7, alpha: 0.9) // Darker blue
+            sender.backgroundColor = UIConfig.Colors.buttonPressed
         }
     }
     
     @objc func buttonTouchUp(_ sender: UIButton) {
-        // Button released effect
+        // btn released effect
         UIView.animate(withDuration: 0.1) {
             sender.transform = CGAffineTransform.identity
-            sender.backgroundColor = UIColor(red: 0, green: 0.5, blue: 0.8, alpha: 0.8) // Original blue
+            sender.backgroundColor = UIConfig.Colors.buttonBackground
         }
     }
     
@@ -411,12 +497,11 @@ class ViewController: UIViewController, UITextFieldDelegate {
         pipeTimer?.invalidate()
         gameOverLabel.isHidden = false
         
-        // Show leaderboard instead of restart button
-        leaderboardView.isHidden = false
-        // Focus on name field
-        nameTextField.becomeFirstResponder()
+        leaderboardView.isHidden = false // displya leaderboard instead of restart btn
         
-        // Update the score label in the leaderboard
+        nameTextField.becomeFirstResponder() // focuse on name field
+        
+        // upd the score label in the leaderboard
         if let yourScoreLabel = leaderboardView.subviews.first(where: { ($0 as? UILabel)?.text?.hasPrefix("Your Score") == true }) as? UILabel {
             yourScoreLabel.text = "Your Score: \(score)"
         }
@@ -424,31 +509,32 @@ class ViewController: UIViewController, UITextFieldDelegate {
     
     @objc func submitScore() {
         guard let name = nameTextField.text, !name.isEmpty else {
-            // Alert for empty name
+            // alert for empty name | name submission is required
             let alert = UIAlertController(title: "Name Required", message: "Please enter your name to submit your score", preferredStyle: .alert)
             alert.addAction(UIAlertAction(title: "OK", style: .default))
             present(alert, animated: true)
             return
         }
         
-        // Add score to leaderboard
-        leaderboardScores.append((name: name, score: score))
+        // add score to leaderboard using ScoreEntry struct
+        let entry = ScoreEntry(name: name, score: score)
+        leaderboardScores.append(entry)
         
-        // Sort by score (highest first)
+        // sort by score DESC order -- higest to lowest
         leaderboardScores.sort { $0.score > $1.score }
         
-        // Limit to top 10
+        // limit to top 10
         if leaderboardScores.count > 10 {
             leaderboardScores = Array(leaderboardScores.prefix(10))
         }
         
-        // Reload the table
+        // reload the table
         leaderboardTableView.reloadData()
         
-        // Dismiss keyboard
+        // dismiss keyboard
         nameTextField.resignFirstResponder()
         
-        // Save leaderboard
+        // save leaderboard
         saveLeaderboard()
     }
     
@@ -460,7 +546,7 @@ class ViewController: UIViewController, UITextFieldDelegate {
     
     @objc func flap() {
         if isGameRunning {
-            birdVelocity = -8
+            birdState.flap()
         }
     }
     
@@ -469,26 +555,33 @@ class ViewController: UIViewController, UITextFieldDelegate {
     }
     
     func saveLeaderboard() {
-        // Convert to dictionaries for storage
-        let leaderboardData = leaderboardScores.map { ["name": $0.name, "score": $0.score] }
-        UserDefaults.standard.set(leaderboardData, forKey: "leaderboard")
-        UserDefaults.standard.synchronize()
-    }
-    
-    func loadLeaderboard() {
-        if let savedLeaderboard = UserDefaults.standard.object(forKey: "leaderboard") as? [[String: Any]] {
-            leaderboardScores = savedLeaderboard.compactMap { dict in
-                if let name = dict["name"] as? String,
-                   let score = dict["score"] as? Int {
-                    return (name: name, score: score)
-                }
-                return nil
-            }
-            leaderboardScores.sort { $0.score > $1.score }
+        // encode ScoreEntry structs for storage =>> since we made ScoreEntry Codable ==>> we can use JSONEncoder)
+        if let encoded = try? JSONEncoder().encode(leaderboardScores) {
+            UserDefaults.standard.set(encoded, forKey: "leaderboard")
         }
     }
     
-    // MARK: - UITextField Delegate
+    func loadLeaderboard() {
+        // load and decode ScoreEntry structs
+        if let savedData = UserDefaults.standard.data(forKey: "leaderboard"),
+           let decodedEntries = try? JSONDecoder().decode([ScoreEntry].self, from: savedData) {
+            leaderboardScores = decodedEntries
+        } else {
+            // fallback to old format if needed
+            if let savedLeaderboard = UserDefaults.standard.object(forKey: "leaderboard") as? [[String: Any]] {
+                leaderboardScores = savedLeaderboard.compactMap { dict in
+                    if let name = dict["name"] as? String,
+                       let score = dict["score"] as? Int {
+                        return ScoreEntry(name: name, score: score)
+                    }
+                    return nil
+                }
+            }
+        }
+        
+        leaderboardScores.sort { $0.score > $1.score }
+    }
+    
     
     func textFieldShouldReturn(_ textField: UITextField) -> Bool {
         submitScore()
@@ -496,7 +589,6 @@ class ViewController: UIViewController, UITextFieldDelegate {
     }
 }
 
-// MARK: - UITableViewDataSource & UITableViewDelegate
 
 extension ViewController: UITableViewDataSource, UITableViewDelegate {
     func tableView(_ tableView: UITableView, numberOfRowsInSection section: Int) -> Int {
@@ -506,13 +598,13 @@ extension ViewController: UITableViewDataSource, UITableViewDelegate {
     func tableView(_ tableView: UITableView, cellForRowAt indexPath: IndexPath) -> UITableViewCell {
         let cell = tableView.dequeueReusableCell(withIdentifier: "scoreCell", for: indexPath)
         
-        // Configure cell
+        // config cell using ScoreEntry struct
         let entry = leaderboardScores[indexPath.row]
         cell.textLabel?.text = "\(indexPath.row + 1). \(entry.name): \(entry.score)"
         cell.textLabel?.textColor = .white
         cell.backgroundColor = UIColor(white: 0.2, alpha: 0.5)
         
-        // Highlight current score
+        // highlight cur score
         if entry.score == score && nameTextField.text == entry.name {
             cell.backgroundColor = UIColor(red: 0.0, green: 0.5, blue: 0.0, alpha: 0.7)
         }
